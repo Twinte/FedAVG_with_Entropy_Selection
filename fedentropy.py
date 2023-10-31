@@ -21,13 +21,19 @@ np.random.seed(14)
 torch.manual_seed(14)  # Change the seed to the same value used earlier
 
 # Hyperparameters
-num_clients = 40  # Number of clients
-num_epochs = 1    # Number of local epochs
+num_clients = 60  # Number of clients
+num_epochs = 5    # Number of local epochs
 global_rounds = 100
 lr = 0.001         # Learning rate
 alpha = 0.1     # Dirichlet distribution parameters
 num_classes = 10
+drop_rate = 0.16 # 
 non_iid = True
+entropy_selection = True
+
+# Define the initial number of rounds before dropping clients
+initial_rounds_before_drop = 5  # Adjust this as needed
+round_to_drop_clients = initial_rounds_before_drop
 
 #Initialize a logger
 log_folder = "logs"
@@ -94,12 +100,13 @@ class_indices = [indices[i*num_samples_per_class:(i+1)*num_samples_per_class] fo
 client_indices = [[] for _ in range(num_clients)]
 
 # Calculate Dirichlet-distributed proportions
+print("Non-IID Distribution")
+print("Calculating Dirichlet Distribution...")
 if non_iid:
     min_size = 0
     K = num_classes
     N = len(dataset_labels)
 
-    print("Calculating Dirichlet Distribution...")
     while min_size < num_classes:
         idx_batch = [[] for _ in range(num_clients)]
         for k in range(K):
@@ -137,20 +144,22 @@ client_loaders = [DataLoader(Subset(trainset, client_indices[i]), batch_size=64,
 # Initialize global model
 global_model = FedAvgCNN().to(device)
 
-# Calculate and report entropy of client labels before training
-entropy_scores_list = []  # List to store entropy scores for each client
+# Initialize a list to store entropy scores for each client
+entropy_scores_list = []
+
 for client_idx in range(num_clients):
     client_subset_labels = [trainset[idx][1] for idx in class_indices[client_idx]]
+
+    # Calculate the frequency of each label in the client subset
+    label_counts = np.bincount(client_subset_labels)
     
-    unique_labels, label_counts = np.unique(client_subset_labels, return_counts=True)
-    print(unique_labels)
-    print(label_counts)
+    # Calculate the proportion of each label in the client subset
     label_probs = label_counts / np.sum(label_counts)
-    print(label_probs)
     
     # Remove zero probabilities to avoid log(0) issues
     label_probs = label_probs[label_probs > 0]
     
+    # Calculate the entropy using the formula you provided
     entropy = -np.sum(label_probs * np.log2(label_probs))
     
     entropy_scores_list.append(entropy)
@@ -160,23 +169,27 @@ for client_idx in range(num_clients):
 
 if non_iid:
     # Rank clients based on average entropy scores
-    ranked_clients = np.argsort(entropy_scores_list)[::-1][:num_clients]  # Sort and take the top 10 clients
+    ranked_clients = np.argsort(entropy_scores_list)[::-1][:num_clients]  # Sort and take the top % of clients
 else:
-    # IID Data Distribution (randomly select 10 clients)
+    # IID Data Distribution (randomly select a % of clients)
     ranked_clients = np.random.permutation(num_clients)[:num_clients]
     client_indices = [class_indices[ranked_clients[i]] for i in range(num_clients)]
 
-#print(ranked_clients)
+
 # Calculate the number of clients to select (25% of num_clients)
 num_clients_to_select = int(0.25 * num_clients)
 
-# Get the subset of ranked clients to train
-selected_clients = ranked_clients[:num_clients_to_select]
+if entropy_selection:
+    # Get the subset of ranked clients to train
+    selected_clients = ranked_clients[:num_clients_to_select]
+else: 
+    selected_clients = np.random.choice(range(num_clients), num_clients_to_select, replace=False)
 
 # Lists to store metrics for each epoch and each client
-all_client_train_losses = []
-all_client_train_accuracies = []
-all_client_train_auc_scores = []
+mean_train_losses = []
+mean_train_accuracies = []
+mean_train_auc_scores = []
+initial_selected_clients = selected_clients
 
 # Log a description of the process before training
 logging.info('-'*50)
@@ -188,8 +201,11 @@ logging.info(f"Learning Rate: {lr}")
 logging.info(f"Alpha (Dirichlet Distribution Parameter): {alpha}")
 logging.info(f"Number of Classes: {num_classes}")
 logging.info(f"Non-iid Data Distribution: {non_iid}")
+logging.info(f"Entropy Selection: {entropy_selection}")
+logging.info(f"Client Drop Rate: {drop_rate}")
 logging.info(f"Device: {device}")
 
+print(f"Training Process")
 # Training loop (FedAvg)
 for round in range(global_rounds):
     local_models = []  # Store local models of clients
@@ -199,6 +215,21 @@ for round in range(global_rounds):
     client_train_losses = []
     client_train_accuracies = []
     client_train_auc_scores = []
+
+    if round+1 == round_to_drop_clients:
+        # Calculate the number of clients to drop based on the current drop rate
+        num_clients_to_drop = int(drop_rate * len(selected_clients))
+
+        # Randomly select clients to drop
+        clients_to_drop = np.random.choice(selected_clients, num_clients_to_drop, replace=False)
+
+        # Remove the dropped clients from the selected clients list
+        selected_clients = [client_idx for client_idx in selected_clients if client_idx not in clients_to_drop]
+
+        # Update the round at which you want to drop clients for the next cycle
+        round_to_drop_clients += initial_rounds_before_drop
+        logging.info(f"{num_clients_to_drop} Clients Out of connection")
+
 
     for client_idx in selected_clients:  # Loop through only the selected clients
         local_model = FedAvgCNN().to(device)  # Create a local copy of the model
@@ -258,9 +289,18 @@ for round in range(global_rounds):
 
 
     # Append metrics for the current epoch
-    all_client_train_losses.append(client_train_losses)
-    all_client_train_accuracies.append(client_train_accuracies)
-    all_client_train_auc_scores.append(client_train_auc_scores)
+    #all_client_train_losses.append(client_train_losses)
+    #all_client_train_accuracies.append(client_train_accuracies)
+    #all_client_train_auc_scores.append(client_train_auc_scores)
+
+    mean_loss = np.mean(client_train_losses)
+    mean_train_losses.append(mean_loss)
+
+    mean_accuracy = np.mean(client_train_accuracies)
+    mean_train_accuracies.append(mean_accuracy)
+
+    mean_auc_score = np.mean(client_train_auc_scores)
+    mean_train_auc_scores.append(mean_auc_score)
 
     # Print metrics for each client
     for i, client_idx in enumerate(selected_clients):
@@ -277,6 +317,7 @@ for round in range(global_rounds):
         aggregated_state_dict[param_name] = aggregated_param
 
     global_model.load_state_dict(aggregated_state_dict)
+    selected_clients = initial_selected_clients
 
 # Close the logger
 logging.shutdown()
@@ -284,11 +325,11 @@ logging.shutdown()
 # Return the final global model
 final_global_model = global_model.to("cpu")
 
+print("Training Complete!")
 # Calculate mean values for each epoch across all clients
-mean_train_losses = np.mean(all_client_train_losses, axis=1)
-mean_train_accuracies = np.mean(all_client_train_accuracies, axis=1)
-mean_train_auc_scores = np.mean(all_client_train_auc_scores, axis=1)
-
+mean_train_loss = np.mean(mean_train_losses)
+mean_train_accuracy = np.mean(mean_train_accuracies)
+mean_train_auc_score = np.mean(mean_train_auc_scores)
 # Plot metrics after the process is completed
 
 # Create the first figure for the loss plot
@@ -338,5 +379,3 @@ for client_idx in selected_clients:
     # Save the bar plot in the results directory
     plot_name = f'client_{client_idx+1}_class_distribution.png'
     plt.savefig(os.path.join(results_dir, plot_name))
-    
-    plt.show()
