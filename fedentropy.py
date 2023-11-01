@@ -22,14 +22,15 @@ torch.manual_seed(14)  # Change the seed to the same value used earlier
 
 # Hyperparameters
 num_clients = 60  # Number of clients
-num_epochs = 5    # Number of local epochs
-global_rounds = 100
-lr = 0.001         # Learning rate
+num_epochs = 1    # Number of local epochs
+global_rounds = 50
+lr = 0.01         # Learning rate
 alpha = 0.1     # Dirichlet distribution parameters
 num_classes = 10
 drop_rate = 0.16 # 
 non_iid = True
-entropy_selection = True
+entropy_selection = False
+num_clients_to_select = int(0.25 * num_clients)  # 25% of clients to select
 
 # Define the initial number of rounds before dropping clients
 initial_rounds_before_drop = 5  # Adjust this as needed
@@ -43,14 +44,17 @@ if not os.path.exists(log_folder):
 if not os.path.exists(results_folder):
     os.makedirs(results_folder)
 
-# Create a suffix based on the 'non_iid' variable
+# Create a suffix based on the 'non_iid' variable and other parameters
 non_iid_suffix = "_non_iid" if non_iid else "_iid"
+selection_suffix = "_entropy" if entropy_selection else "_random"
+drop_rate_suffix = f"_drop{int(drop_rate * 100)}"
 # Generate a unique log file name with date and time
-log_file = os.path.join(log_folder, f"training_{time.strftime('%Y%m%d_%H%M%S')}{non_iid_suffix}.log")
+log_file = os.path.join(log_folder, f"training_{time.strftime('%Y%m%d_%H%M%S')}{non_iid_suffix}{selection_suffix}{drop_rate_suffix}.log")
 logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 # Create a directory for results if it doesn't exist
-results_dir = os.path.join(results_folder, f"{time.strftime('%Y%m%d_%H%M%S')}{non_iid_suffix}")
+results_dir = os.path.join(results_folder, f"{time.strftime('%Y%m%d_%H%M%S')}{non_iid_suffix}{selection_suffix}{drop_rate_suffix}")
 os.makedirs(results_dir, exist_ok=True)
+
 
 # Define the neural network architecture
 class FedAvgCNN(nn.Module):
@@ -175,21 +179,20 @@ else:
     ranked_clients = np.random.permutation(num_clients)[:num_clients]
     client_indices = [class_indices[ranked_clients[i]] for i in range(num_clients)]
 
+def select_clients(num_clients, num_clients_to_select, ranked_clients=None, entropy_selection=True):
+    if entropy_selection:
+        if ranked_clients is None:
+            raise ValueError("Ranked clients must be provided for entropy selection.")
+        selected_clients = ranked_clients[:num_clients_to_select]
+    else:
+        selected_clients = np.random.choice(range(num_clients), num_clients_to_select, replace=False)
 
-# Calculate the number of clients to select (25% of num_clients)
-num_clients_to_select = int(0.25 * num_clients)
-
-if entropy_selection:
-    # Get the subset of ranked clients to train
-    selected_clients = ranked_clients[:num_clients_to_select]
-else: 
-    selected_clients = np.random.choice(range(num_clients), num_clients_to_select, replace=False)
+    return selected_clients
 
 # Lists to store metrics for each epoch and each client
 mean_train_losses = []
 mean_train_accuracies = []
 mean_train_auc_scores = []
-initial_selected_clients = selected_clients
 
 # Log a description of the process before training
 logging.info('-'*50)
@@ -210,6 +213,7 @@ print(f"Training Process")
 for round in range(global_rounds):
     local_models = []  # Store local models of clients
     logging.info(f"Epoch {round+1}/{global_rounds}")
+    selected_clients = select_clients(num_clients, num_clients_to_select, ranked_clients, entropy_selection)
 
     # Lists to store metrics for each client
     client_train_losses = []
@@ -317,7 +321,6 @@ for round in range(global_rounds):
         aggregated_state_dict[param_name] = aggregated_param
 
     global_model.load_state_dict(aggregated_state_dict)
-    selected_clients = initial_selected_clients
 
 # Close the logger
 logging.shutdown()
