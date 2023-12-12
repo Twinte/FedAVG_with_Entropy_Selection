@@ -13,6 +13,8 @@ import seaborn as sns
 import time
 import logging
 
+from model import FedAvgCNN
+
 # Check if a GPU is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -54,43 +56,6 @@ logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s -
 # Create a directory for results if it doesn't exist
 results_dir = os.path.join(results_folder, f"{time.strftime('%Y%m%d_%H%M%S')}{non_iid_suffix}{selection_suffix}{drop_rate_suffix}")
 os.makedirs(results_dir, exist_ok=True)
-
-
-# Define the neural network architecture
-class FedAvgCNN(nn.Module):
-    def __init__(self, in_features=1, num_classes=10, dim=1024):
-        super().__init__()
-
-        # First convolutional layer
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_features, 32, kernel_size=5, padding=0, stride=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=(2, 2))
-        )
-        
-        # Second convolutional layer
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=5, padding=0, stride=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=(2, 2))
-        )
-        
-        # First fully connected layer
-        self.fc1 = nn.Sequential(
-            nn.Linear(dim, 512),
-            nn.ReLU(inplace=True)
-        )
-        
-        # Output layer (fully connected)
-        self.fc = nn.Linear(512, num_classes)
-
-    def forward(self, x):
-        out = self.conv1(x)      # Apply first convolutional layer
-        out = self.conv2(out)    # Apply second convolutional layer
-        out = torch.flatten(out, 1)  # Flatten the output for fully connected layers
-        out = self.fc1(out)      # Apply first fully connected layer
-        out = self.fc(out)       # Apply output fully connected layer
-        return out
     
 # Load FMNIST dataset
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
@@ -230,6 +195,10 @@ for round in range(global_rounds):
         # Remove the dropped clients from the selected clients list
         selected_clients = [client_idx for client_idx in selected_clients if client_idx not in clients_to_drop]
 
+        # Log information about dropped clients
+        if num_clients_to_drop > 0:
+            logging.info(f"{num_clients_to_drop} Clients Disconnected from Training: {clients_to_drop}")
+
         # Update the round at which you want to drop clients for the next cycle
         round_to_drop_clients += initial_rounds_before_drop
         logging.info(f"{num_clients_to_drop} Clients Out of connection")
@@ -315,8 +284,10 @@ for round in range(global_rounds):
     aggregated_state_dict = {}
     logging.info('-'*50)
     logging.info(f"Aggregating client models...")
+    
     for param_name in global_model.state_dict():
         param_tensors = [local_models[i].state_dict()[param_name] for i in range(len(selected_clients))]
+
         aggregated_param = torch.mean(torch.stack(param_tensors), dim=0)
         aggregated_state_dict[param_name] = aggregated_param
 
