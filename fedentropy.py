@@ -33,6 +33,7 @@ drop_rate = 0.16 #
 non_iid = True
 entropy_selection = False
 num_clients_to_select = int(0.25 * num_clients)  # 25% of clients to select
+pre_trained = False
 
 # Define the initial number of rounds before dropping clients
 initial_rounds_before_drop = 5  # Adjust this as needed
@@ -112,6 +113,14 @@ client_loaders = [DataLoader(Subset(trainset, client_indices[i]), batch_size=64,
 
 # Initialize global model
 global_model = FedAvgCNN().to(device)
+
+# Load the pre-trained model state dictionary
+pretrained_model_path = 'results/global_model.pth'
+if os.path.exists(pretrained_model_path) and pre_trained:
+    global_model.load_state_dict(torch.load(pretrained_model_path))
+    print("Pre-trained model loaded successfully.")
+else:
+    print("No pre-trained model found. Training from scratch...")
 
 # Initialize a list to store entropy scores for each client
 entropy_scores_list = []
@@ -295,6 +304,9 @@ for round in range(global_rounds):
 
 # Close the logger
 logging.shutdown()
+
+# Save the model
+torch.save(global_model.state_dict(), os.path.join(results_dir, 'global_model.pth'))
 
 # Return the final global model
 final_global_model = global_model.to("cpu")
