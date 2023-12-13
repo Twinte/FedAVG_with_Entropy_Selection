@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import time
 import logging
+import argparse
+import sys
 
 from model import FedAvgCNN
 
@@ -22,18 +24,35 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(14)
 torch.manual_seed(14)  # Change the seed to the same value used earlier
 
-# Hyperparameters
-num_clients = 60  # Number of clients
-num_epochs = 1    # Number of local epochs
-global_rounds = 50
-lr = 0.01         # Learning rate
-alpha = 0.1     # Dirichlet distribution parameters
-num_classes = 10
-drop_rate = 0.16 # 
-non_iid = True
-entropy_selection = False
-num_clients_to_select = int(0.25 * num_clients)  # 25% of clients to select
-pre_trained = False
+parser = argparse.ArgumentParser(description='Federated Learning with FedAvg CNN')
+
+# Add command-line arguments for hyperparameters
+parser.add_argument('--num_clients', type=int, default=60, help='Number of clients')
+parser.add_argument('--num_epochs', type=int, default=1, help='Number of local epochs')
+parser.add_argument('--global_rounds', type=int, default=50, help='Number of global rounds')
+parser.add_argument('--lr', type=float, default=0.01, help='Learning rate')
+parser.add_argument('--alpha', type=float, default=0.1, help='Dirichlet distribution parameter')
+parser.add_argument('--num_classes', type=int, default=10, help='Number of classes')
+parser.add_argument('--drop_rate', type=float, default=0.16, help='Client dropout rate')
+parser.add_argument('--non_iid', action='store_true', help='Use non-IID data distribution')
+parser.add_argument('--entropy_selection', action='store_true', help='Use entropy-based client selection')
+parser.add_argument('--join_ratio', type=float, default=1.0, help='Number of clients to select')
+parser.add_argument('--pre_trained', action='store_true', help='Use pre-trained model')
+
+args = parser.parse_args()
+
+#Hyperparameters
+num_clients = args.num_clients
+num_epochs = args.num_epochs
+global_rounds = args.global_rounds
+lr = args.lr
+alpha = args.alpha
+num_classes = args.num_classes
+drop_rate = args.drop_rate
+non_iid = args.non_iid
+entropy_selection = args.entropy_selection
+num_clients_to_select = int(args.join_ratio*num_clients)
+pre_trained = args.pre_trained
 
 # Define the initial number of rounds before dropping clients
 initial_rounds_before_drop = 5  # Adjust this as needed
@@ -60,7 +79,12 @@ os.makedirs(results_dir, exist_ok=True)
     
 # Load FMNIST dataset
 transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
-trainset = torchvision.datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
+try:
+    trainset = torchvision.datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
+except Exception as e:
+    logging.error(f"Error loading the dataset: {e}")
+    print("Error: Unable to load the dataset. Please check your internet connection and try again.")
+    sys.exit(1)
 num_samples_per_class = len(trainset) // num_clients  # Each class has 6000 samples for 10 clients
 indices = torch.arange(0, len(trainset))
 dataset_labels = trainset.targets
