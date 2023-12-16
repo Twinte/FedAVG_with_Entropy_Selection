@@ -16,6 +16,8 @@ import argparse
 import sys
 
 from model import FedAvgCNN
+from data_loader import load_and_split_dataset, create_client_loaders
+from plotting import plot_mean_metrics, plot_class_distribution
 
 # Check if a GPU is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -76,53 +78,9 @@ logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s -
 # Create a directory for results if it doesn't exist
 results_dir = os.path.join(results_folder, f"{time.strftime('%Y%m%d_%H%M%S')}{non_iid_suffix}{selection_suffix}{drop_rate_suffix}")
 os.makedirs(results_dir, exist_ok=True)
-    
-# Load FMNIST dataset
-transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
-try:
-    trainset = torchvision.datasets.FashionMNIST(root='./data', train=True, download=True, transform=transform)
-except Exception as e:
-    logging.error(f"Error loading the dataset: {e}")
-    print("Error: Unable to load the dataset. Please check your internet connection and try again.")
-    sys.exit(1)
-num_samples_per_class = len(trainset) // num_clients  # Each class has 6000 samples for 10 clients
-indices = torch.arange(0, len(trainset))
-dataset_labels = trainset.targets
-class_indices = [indices[i*num_samples_per_class:(i+1)*num_samples_per_class] for i in range(num_clients)]
 
-# Initialize data structures
-client_indices = [[] for _ in range(num_clients)]
-
-# Calculate Dirichlet-distributed proportions
-print("Non-IID Distribution")
-print("Calculating Dirichlet Distribution...")
-if non_iid:
-    min_size = 0
-    K = num_classes
-    N = len(dataset_labels)
-
-    while min_size < num_classes:
-        idx_batch = [[] for _ in range(num_clients)]
-        for k in range(K):
-            idx_k = np.where(dataset_labels == k)[0]
-            np.random.shuffle(idx_k)
-            proportions = np.random.dirichlet(np.repeat(alpha, num_clients))
-            proportions = np.array([p * (len(idx_j) < N / num_clients) for p, idx_j in zip(proportions, idx_batch)])
-            proportions = proportions / proportions.sum()
-            proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
-            idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_k, proportions))]
-            min_size = min([len(idx_j) for idx_j in idx_batch])
-    
-    # Assign data samples to clients
-    for j in range(num_clients):
-        client_indices[j] = idx_batch[j]
-else:
-    print("IID partition")
-    num_samples_per_client = len(trainset) // num_clients  # Each client has an equal number of samples
-    #Shuffle the dataset to create an IID partition
-    indices = torch.randperm(len(trainset))
-    # Divide the dataset into equal-sized subsets for each client
-    client_indices = [indices[i * num_samples_per_client: (i + 1) * num_samples_per_client] for i in range(num_clients)]
+# Load and split the dataset
+trainset, client_indices, class_indices = load_and_split_dataset(num_classes, num_clients, alpha, non_iid)
 
 logging.info('-'*50)
 logging.info("Length of each client's dataset:")
@@ -130,10 +88,8 @@ for i, indices in enumerate(client_indices):
     logging.info(f"Client {i + 1}: {len(indices)} samples")
 logging.info(f"Total samples across all clients: {sum(len(indices) for indices in client_indices)}")
 
-    
-
 # Create Subset DataLoaders for each client
-client_loaders = [DataLoader(Subset(trainset, client_indices[i]), batch_size=64, shuffle=True) for i in range(num_clients)]
+client_loaders = create_client_loaders(trainset, client_indices)
 
 # Initialize global model
 global_model = FedAvgCNN().to(device)
@@ -336,56 +292,8 @@ torch.save(global_model.state_dict(), os.path.join(results_dir, 'global_model.pt
 final_global_model = global_model.to("cpu")
 
 print("Training Complete!")
-# Calculate mean values for each epoch across all clients
-mean_train_loss = np.mean(mean_train_losses)
-mean_train_accuracy = np.mean(mean_train_accuracies)
-mean_train_auc_score = np.mean(mean_train_auc_scores)
-# Plot metrics after the process is completed
-
-# Create the first figure for the loss plot
-fig1, ax1 = plt.subplots(figsize=(12, 6))
-plt.plot(mean_train_losses)
-plt.title('Mean Client Train Loss')
-plt.xlabel('Round')
-plt.ylabel('Loss')
-
-# Save the first figure in the results directory
-fig1.savefig(os.path.join(results_dir, 'mean_train_loss.png'))
-
-# Create the second figure for the accuracy plot
-fig2, ax2 = plt.subplots(figsize=(12, 6))
-plt.plot(mean_train_accuracies)
-plt.title('Mean Client Train Accuracy')
-plt.xlabel('Round')
-plt.ylabel('Accuracy')
-
-# Save the second figure in the results directory
-fig2.savefig(os.path.join(results_dir, 'mean_train_accuracy.png'))
-
-# Create the third figure for the AUC plot
-fig3, ax3 = plt.subplots(figsize=(12, 6))
-plt.plot(mean_train_auc_scores)
-plt.title('Mean Client Train AUC')
-plt.xlabel('Round')
-plt.ylabel('AUC Score')
-
-# Save the third figure in the results directory
-fig3.savefig(os.path.join(results_dir, 'mean_train_auc.png'))
+# Plot mean metrics after the process is completed
+plot_mean_metrics(mean_train_losses, mean_train_accuracies, mean_train_auc_scores, results_dir)
 
 # Visualize class distribution in each client
-for client_idx in selected_clients:
-    client_subset_labels = [trainset[idx][1] for idx in class_indices[client_idx]]
-    
-    unique_labels, label_counts = np.unique(client_subset_labels, return_counts=True)
-    
-    # Create a bar plot for the class distribution
-    plt.figure(figsize=(8, 4))
-    sns.barplot(x=unique_labels, y=label_counts)
-    plt.title(f'Client {client_idx+1} - Class Distribution')
-    plt.xlabel('Class')
-    plt.ylabel('Count')
-    plt.xticks(rotation=45)
-    
-    # Save the bar plot in the results directory
-    plot_name = f'client_{client_idx+1}_class_distribution.png'
-    plt.savefig(os.path.join(results_dir, plot_name))
+plot_class_distribution(trainset, class_indices, selected_clients, results_dir)
